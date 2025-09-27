@@ -1,140 +1,127 @@
-# preprocessing.py
+# src/preprocessing.py
 # ============================================================
-# Data preprocessing module for Personalized Learning Recommender
+# Data preprocessing pipeline for Personalized Learning System
 # ============================================================
 
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-from sklearn.model_selection import train_test_split
+
 
 # ------------------------------------------------------------
-# 1. CLEANING FUNCTION
+# Cleaning
 # ------------------------------------------------------------
-def clean_dataset(df):
-    """
-    Basic cleaning: remove duplicates, handle missing values
-    """
-    print("\n=== CLEANING DATASET ===")
+def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    print("=== CLEANING DATASET ===")
+    before = df.shape[0]
 
-    # Remove duplicates
-    before = len(df)
+    # remove duplicates
     df = df.drop_duplicates()
-    after = len(df)
+    after = df.shape[0]
     print(f"Removed {before - after} duplicate rows")
 
-    # Handle missing values: simple strategy (can be improved)
+    # missing values
     missing = df.isnull().sum().sum()
     print(f"Total missing values: {missing}")
-    df = df.fillna({
-        col: df[col].mode()[0] if df[col].dtype == 'object' else df[col].median()
-        for col in df.columns
-    })
-    print("Missing values filled (mode for categorical, median for numeric)")
 
+    for col in df.columns:
+        if df[col].dtype == "object":
+            df[col] = df[col].fillna(df[col].mode()[0])
+        else:
+            df[col] = df[col].fillna(df[col].median())
+
+    print("Missing values filled (mode for categorical, median for numeric)")
     return df
 
+
 # ------------------------------------------------------------
-# 2. ENCODING FUNCTION
+# Encoding
 # ------------------------------------------------------------
-def encode_features(df, categorical_cols, numerical_cols):
-    """
-    Encode categorical with LabelEncoder, scale numeric with MinMaxScaler
-    """
+def encode_features(df: pd.DataFrame, categorical_cols, numeric_cols):
     print("\n=== ENCODING FEATURES ===")
 
-    # Label encode categorical
     encoders = {}
     for col in categorical_cols:
         le = LabelEncoder()
-        df[col] = le.fit_transform(df[col].astype(str))
+        df[col] = le.fit_transform(df[col])
         encoders[col] = le
         print(f"Encoded categorical: {col}")
 
-    # Normalize numeric
     scaler = MinMaxScaler()
-    df[numerical_cols] = scaler.fit_transform(df[numerical_cols])
-    print(f"Normalized numeric columns: {numerical_cols}")
+    df[numeric_cols] = scaler.fit_transform(df[numeric_cols])
+    print(f"Normalized numeric columns: {numeric_cols}")
 
     return df, encoders, scaler
 
+
 # ------------------------------------------------------------
-# 3. SPLIT FUNCTION
+# Time-based split per user
 # ------------------------------------------------------------
-from sklearn.model_selection import train_test_split
-
-def split_dataset(df, user_col, test_size=0.2, val_size=0.1, random_state=42, stratify=True, min_interactions=2):
+def split_dataset_time_based(
+    df, user_col="learner_id", time_col="timestamp",
+    train_ratio=0.8, val_ratio=0.1, test_ratio=0.1
+):
     """
-    Split dataset into train, val, test.
-    
-    Params:
-    - df: dataframe
-    - user_col: tên cột user
-    - test_size: tỉ lệ test
-    - val_size: tỉ lệ validation
-    - stratify: nếu True thì stratify theo user_col (chỉ khi đủ dữ liệu)
-    - min_interactions: số interactions tối thiểu để stratify
-    
-    Return: train, val, test
+    Split dataset per user in chronological order.
+    Guarantees each user has interactions in train set.
     """
-    if stratify:
-        # Lọc user có >= min_interactions
-        user_counts = df[user_col].value_counts()
-        valid_users = user_counts[user_counts >= min_interactions].index
-        df_strat = df[df[user_col].isin(valid_users)]
+    train, val, test = [], [], []
 
-        if len(df_strat) > 0:
-            print(f"Using stratify split on {len(valid_users)} users (>= {min_interactions} interactions)")
-            train_val, test = train_test_split(
-                df_strat,
-                test_size=test_size,
-                stratify=df_strat[user_col],
-                random_state=random_state
-            )
-            train, val = train_test_split(
-                train_val,
-                test_size=val_size,
-                stratify=train_val[user_col],
-                random_state=random_state
-            )
-        else:
-            print("⚠ Not enough users for stratify. Falling back to random split.")
-            stratify = False
+    for user, user_df in df.groupby(user_col):
+        user_df = user_df.sort_values(time_col)
+        n = len(user_df)
 
-    if not stratify:
-        train_val, test = train_test_split(df, test_size=test_size, random_state=random_state)
-        train, val = train_test_split(train_val, test_size=val_size, random_state=random_state)
+        if n < 3:
+            train.append(user_df)
+            continue
 
+        train_end = int(n * train_ratio)
+        val_end = train_end + int(n * val_ratio)
+
+        train.append(user_df.iloc[:train_end])
+        if val_end > train_end:
+            val.append(user_df.iloc[train_end:val_end])
+        if val_end < n:
+            test.append(user_df.iloc[val_end:])
+
+    train = pd.concat(train).reset_index(drop=True)
+    val = pd.concat(val).reset_index(drop=True) if val else pd.DataFrame(columns=df.columns)
+    test = pd.concat(test).reset_index(drop=True) if test else pd.DataFrame(columns=df.columns)
+
+    print(f"[Split] Train={train.shape}, Val={val.shape}, Test={test.shape}")
     return train, val, test
 
 
 # ------------------------------------------------------------
-# 4. MASTER PIPELINE
+# Main preprocessing pipeline
 # ------------------------------------------------------------
-def preprocess_data(df, user_col, item_col, rating_col=None):
-    """
-    Complete preprocessing pipeline:
-    1. Clean dataset
-    2. Encode categorical + normalize numerical
-    3. Split train/val/test
-    """
+def preprocess_data(df, user_col="learner_id", item_col="content_type", rating_col="engagement_score"):
+    # Clean
     df = clean_dataset(df)
 
-    # Auto-detect categorical & numeric
-    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-    numerical_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    # Feature engineering
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["hour"] = df["timestamp"].dt.hour
+    df["day_of_week"] = df["timestamp"].dt.dayofweek
+    df["month"] = df["timestamp"].dt.month
 
-    # Remove key IDs from normalization
-    numerical_cols = [c for c in numerical_cols if c not in [user_col, item_col]]
+    categorical_cols = [user_col, "session_id", item_col]
+    numeric_cols = [
+        "time_spent",
+        rating_col,
+        "quiz_score",
+        "completion_rate",
+        "attempts_per_quiz",
+        "learning_outcome",
+        "hour",
+        "day_of_week",
+        "month",
+    ]
 
-    df, encoders, scaler = encode_features(df, categorical_cols, numerical_cols)
+    # Encode
+    df, encoders, scaler = encode_features(df, categorical_cols, numeric_cols)
 
-    train, val, test = split_dataset(
-    df,
-    user_col=user_col,
-    stratify=True,      # bật stratify
-    min_interactions=2  # chỉ stratify khi user có >= 2 interactions
-)
+    # Split
+    train, val, test = split_dataset_time_based(df, user_col=user_col, time_col="timestamp")
 
     return train, val, test, encoders, scaler
-
