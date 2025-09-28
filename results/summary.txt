@@ -1,0 +1,10 @@
+=== FINAL SUMMARY ===
+Best MF config: {'factors': 100, 'lr': 0.005, 'reg': 0.01, 'epochs': 50}
+Best Hybrid-MF Recall: {'pop': 0.0, 'mf': 0.8, 'cb': 0.19999999999999996, 'score': 0.5258064516129032}
+Best Hybrid-MF NDCG: {'pop': 0.7000000000000001, 'mf': 0.0, 'cb': 0.29999999999999993, 'score': np.float64(0.23984515628574962)}
+Best Hybrid-NCF (Recall-based): {'pop': 0.0, 'ncf': 1.0, 'cb': 0.0, 'score': 0.5193548387096775} {'pop': 0.1, 'ncf': 0.7000000000000001, 'cb': 0.19999999999999996, 'score': np.float64(0.250016844916416)}
+Best Hybrid-NCF (ValLoss-based): {'pop': 0.0, 'ncf': 1.0, 'cb': 0.0, 'score': 0.5193548387096775} {'pop': 0.1, 'ncf': 0.7000000000000001, 'cb': 0.19999999999999996, 'score': np.float64(0.250016844916416)}
+Best Hybrid-SASRec Recall: {'pop': 0.30000000000000004, 'mf': 0.2, 'cb': 0.49999999999999994, 'score': 0.5032258064516129}
+Best Hybrid-SASRec NDCG: {'pop': 0.30000000000000004, 'mf': 0.6000000000000001, 'cb': 0.09999999999999987, 'score': np.float64(0.24016063889577594)}
+
+=== END ===
