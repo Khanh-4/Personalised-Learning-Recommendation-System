@@ -1,41 +1,105 @@
 # src/evaluation.py
-import logging
+# ============================================================
+# Evaluation utilities for recommenders
+# ============================================================
+
 import numpy as np
-from itertools import product
+import logging
+from models import train_hybrid, train_hybrid_ncf, MFRecommender
+from evaluation_metrics import recall_at_k, ndcg_at_k
 
-from models import train_hybrid
-from evaluation_metrics import recall_at_k, ndcg_at_k   # ✅ import từ file riêng
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
 
-def evaluate_models(models, test, user_col, item_col, k=10):
+# ------------------------------------------------------------
+# Evaluate a single model
+# ------------------------------------------------------------
+def evaluate_model(model, test, user_col="learner_id", item_col="content_type", k=10):
+    users = test[user_col].unique()
+    all_recs, all_truths = [], []
+
+    for u in users:
+        recs = model.recommend(user_id=u, top_k=k)
+        truths = test.loc[test[user_col] == u, item_col].tolist()
+        all_recs.append(recs)
+        all_truths.append(truths)
+
+    recall = recall_at_k(all_recs, all_truths, k)
+    ndcg = ndcg_at_k(all_recs, all_truths, k)
+    return recall, ndcg
+
+
+# ------------------------------------------------------------
+# Evaluate multiple models at once
+# ------------------------------------------------------------
+def evaluate_models(models, test, user_col="learner_id", item_col="content_type", k=10):
     results = {}
     users = test[user_col].unique()
 
     for name, model in models.items():
         all_recs, all_truths = [], []
-
         for u in users:
-            recs = model.recommend(user_id=u, top_k=k)   # <-- thống nhất
+            recs = model.recommend(user_id=u, top_k=k)
             truths = test.loc[test[user_col] == u, item_col].tolist()
-
             all_recs.append(recs)
             all_truths.append(truths)
 
         recall = recall_at_k(all_recs, all_truths, k)
         ndcg = ndcg_at_k(all_recs, all_truths, k)
-
         results[name] = (recall, ndcg)
         print(f"{name}: Recall@{k}={recall:.3f}, NDCG@{k}={ndcg:.3f}")
 
     return results
 
 
+# ------------------------------------------------------------
+# Tune MF parameters
+# ------------------------------------------------------------
+def tune_mf(train, val, user_col="learner_id", item_col="content_type", rating_col="engagement_score"):
+    configs = [
+        {"factors": 20, "lr": 0.01, "reg": 0.01, "epochs": 20},
+        {"factors": 50, "lr": 0.01, "reg": 0.01, "epochs": 30},
+        {"factors": 100, "lr": 0.005, "reg": 0.01, "epochs": 50},
+        {"factors": 50, "lr": 0.005, "reg": 0.05, "epochs": 40},
+    ]
+    best_cfg, best_score = None, -1
+
+    for cfg in configs:
+        print(f"\n[MF Tuning] Trying config {cfg}")
+        mf = MFRecommender(
+            num_factors=cfg["factors"],
+            learning_rate=cfg["lr"],
+            reg=cfg["reg"],
+            epochs=cfg["epochs"]
+        )
+        mf.fit(train, user_col=user_col, item_col=item_col, rating_col=rating_col)
+
+        recall, ndcg = evaluate_model(mf, val, user_col, item_col, k=10)
+        print(f"[MF Tuning] Recall@10={recall:.3f}, NDCG@10={ndcg:.3f}")
+
+        if recall > best_score:
+            best_score = recall
+            best_cfg = cfg
+
+    print("\n=== Best MF Config ===")
+    print(best_cfg, "Recall@10:", best_score)
+    return best_cfg
 
 
-def tune_hybrid_weights(models, test, user_col, item_col, step=0.1, k=5, verbose=False):
+# ------------------------------------------------------------
+# Tune Hybrid Weights (MF / NCF)
+# ------------------------------------------------------------
+def tune_hybrid_weights(models, test, user_col, item_col, step=0.1, k=10, verbose=False):
     """
-    Grid search cho trọng số Hybrid theo Recall@k và NDCG@k.
-    Nếu verbose=True: log tiến độ mỗi 10%.
+    Grid search for Hybrid weights based on Recall@k and NDCG@k.
+    Supports both MF-Hybrid and NCF-Hybrid.
     """
+    keys = list(models.keys())
+    use_ncf = "ncf" in keys
+
     weights_range = np.arange(0, 1.01, step)
     total = len(weights_range) ** 2
     logging.info(f"[Hybrid Tuning] Total configs = {total}")
@@ -44,31 +108,36 @@ def tune_hybrid_weights(models, test, user_col, item_col, step=0.1, k=5, verbose
     tested = 0
 
     for w_pop in weights_range:
-        for w_mf in weights_range:
-            w_cb = 1.0 - w_pop - w_mf
+        for w_mid in weights_range:  # mf or ncf
+            w_cb = 1.0 - w_pop - w_mid
             if w_cb < 0 or w_cb > 1:
                 continue
 
-            weights = {"pop": float(w_pop), "mf": float(w_mf), "cb": float(w_cb)}
-            hybrid = train_hybrid(models, weights)
+            if use_ncf:
+                weights = {"pop": float(w_pop), "ncf": float(w_mid), "cb": float(w_cb)}
+                hybrid = train_hybrid_ncf(models, weights)
+            else:
+                weights = {"pop": float(w_pop), "mf": float(w_mid), "cb": float(w_cb)}
+                hybrid = train_hybrid(models, weights)
 
             metrics = evaluate_models({"Hybrid": hybrid}, test, user_col, item_col, k=k)
             recall, ndcg = metrics["Hybrid"]
 
-            # update best
             if recall > best_recall["score"]:
-                best_recall = {"pop": weights["pop"], "mf": weights["mf"], "cb": weights["cb"], "score": recall}
+                best_recall = {**weights, "score": recall}
             if ndcg > best_ndcg["score"]:
-                best_ndcg = {"pop": weights["pop"], "mf": weights["mf"], "cb": weights["cb"], "score": ndcg}
+                best_ndcg = {**weights, "score": ndcg}
 
             tested += 1
-            if verbose and tested % max(1, total // 10) == 0:  # chỉ log mỗi 10% nếu verbose
-                logging.info(f"[Hybrid Tuning] Progress: {tested}/{total} tested")
+            if verbose and tested % max(1, total // 10) == 0:
+                print(f"[Hybrid Tuning] Progress {tested}/{total}...")
 
-    logging.info("\n=== BEST HYBRID CONFIG ===")
-    logging.info(f"By Recall@{k}: pop={best_recall['pop']}, mf={best_recall['mf']}, cb={best_recall['cb']} → recall={best_recall['score']:.3f}")
-    logging.info(f"By NDCG@{k}:  pop={best_ndcg['pop']}, mf={best_ndcg['mf']}, cb={best_ndcg['cb']} → ndcg={best_ndcg['score']:.3f}")
+    print("\n=== BEST HYBRID CONFIG ===")
+    if use_ncf:
+        print(f"By Recall@{k}: pop={best_recall['pop']}, ncf={best_recall['ncf']}, cb={best_recall['cb']} → recall={best_recall['score']:.3f}")
+        print(f"By NDCG@{k}:  pop={best_ndcg['pop']}, ncf={best_ndcg['ncf']}, cb={best_ndcg['cb']} → ndcg={best_ndcg['score']:.3f}")
+    else:
+        print(f"By Recall@{k}: pop={best_recall['pop']}, mf={best_recall['mf']}, cb={best_recall['cb']} → recall={best_recall['score']:.3f}")
+        print(f"By NDCG@{k}:  pop={best_ndcg['pop']}, mf={best_ndcg['mf']}, cb={best_ndcg['cb']} → ndcg={best_ndcg['score']:.3f}")
 
     return best_recall, best_ndcg
-
-
