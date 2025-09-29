@@ -8,6 +8,15 @@ import logging
 from models import train_hybrid, train_hybrid_ncf, MFRecommender
 from evaluation_metrics import recall_at_k, ndcg_at_k
 
+__all__ = [
+    "evaluate_model",
+    "evaluate_models",
+    "tune_mf",
+    "tune_hybrid_weights",
+    "_safe_recommend"
+]
+
+
 logging.basicConfig(
     level=logging.INFO, 
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -34,25 +43,43 @@ def evaluate_model(model, test, user_col="learner_id", item_col="content_type", 
 
 # ------------------------------------------------------------
 # Evaluate multiple models at once
+# (Modified to return both metrics + raw_scores for meta-hybrid)
 # ------------------------------------------------------------
 def evaluate_models(models, test, user_col="learner_id", item_col="content_type", k=10):
-    results = {}
+    metrics = {}
+    raw_scores = {}
     users = test[user_col].unique()
 
     for name, model in models.items():
         all_recs, all_truths = [], []
+        all_scores = {}
+
         for u in users:
-            recs = model.recommend(user_id=u, top_k=k)
+            # try để tránh khác biệt tham số recommend
+            try:
+                recs = model.recommend(user_id=u, top_k=k)
+            except TypeError:
+                recs = model.recommend(u, k)
+
             truths = test.loc[test[user_col] == u, item_col].tolist()
             all_recs.append(recs)
             all_truths.append(truths)
 
+            # raw_scores: rank-based scoring
+            score_dict = {}
+            for idx, i in enumerate(recs):
+                score_dict[i] = 1.0 / (idx + 1)  # rank → score
+            all_scores[u] = score_dict
+
         recall = recall_at_k(all_recs, all_truths, k)
         ndcg = ndcg_at_k(all_recs, all_truths, k)
-        results[name] = (recall, ndcg)
+
+        metrics[name] = (recall, ndcg)
+        raw_scores[name] = all_scores
+
         print(f"{name}: Recall@{k}={recall:.3f}, NDCG@{k}={ndcg:.3f}")
 
-    return results
+    return metrics, raw_scores
 
 
 # ------------------------------------------------------------
@@ -120,7 +147,8 @@ def tune_hybrid_weights(models, test, user_col, item_col, step=0.1, k=10, verbos
                 weights = {"pop": float(w_pop), "mf": float(w_mid), "cb": float(w_cb)}
                 hybrid = train_hybrid(models, weights)
 
-            metrics = evaluate_models({"Hybrid": hybrid}, test, user_col, item_col, k=k)
+            # chỉ lấy metrics, bỏ raw_scores
+            metrics, _ = evaluate_models({"Hybrid": hybrid}, test, user_col, item_col, k=k)
             recall, ndcg = metrics["Hybrid"]
 
             if recall > best_recall["score"]:
@@ -141,3 +169,26 @@ def tune_hybrid_weights(models, test, user_col, item_col, step=0.1, k=10, verbos
         print(f"By NDCG@{k}:  pop={best_ndcg['pop']}, mf={best_ndcg['mf']}, cb={best_ndcg['cb']} → ndcg={best_ndcg['score']:.3f}")
 
     return best_recall, best_ndcg
+
+# ------------------------------------------------------------
+# Safe recommend wrapper (for models with different signatures)
+# ------------------------------------------------------------
+def _safe_recommend(model, user, top_k=10):
+    """
+    Try different calling conventions for recommend() 
+    because some models use (user_id=..., top_k=...), 
+    some use (user, k), etc.
+    """
+    try:
+        return model.recommend(user_id=user, top_k=top_k)
+    except TypeError:
+        try:
+            return model.recommend(user, top_k=top_k)
+        except TypeError:
+            try:
+                return model.recommend(user, top_k)
+            except TypeError:
+                try:
+                    return model.recommend(user)
+                except Exception:
+                    return []

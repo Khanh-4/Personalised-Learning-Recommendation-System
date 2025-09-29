@@ -9,7 +9,7 @@ import json
 import numpy as np
 
 # STEP X: Tune MF + Evaluation
-from evaluation import tune_mf, evaluate_model, evaluate_models, tune_hybrid_weights
+from evaluation import tune_mf, evaluate_model, evaluate_models, tune_hybrid_weights, _safe_recommend
 from ncf import train_ncf, load_ncf_model   # ✅ load_ncf_model để reload best checkpoint
 from sasrec import train_sasrec, load_sasrec_model   # ✅ thêm SASRec
 from dataset_analysis_guide import run_complete_analysis
@@ -25,6 +25,8 @@ from models import (
     ContentBasedRecommender,
     HybridRecommender,
 )
+# ✅ Import thêm tree-based models
+from tree_models import DecisionTreeRecommender, RandomForestRecommender
 
 # ------------------------------------------------------------
 # CONFIG
@@ -58,10 +60,25 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
+    # STEP 3b: Tree-based Models
+    # --------------------------------------------------------
+    tree_model = DecisionTreeRecommender(user_col, item_col, rating_col, max_depth=5)
+    tree_model.fit(train)
+
+    rf_model = RandomForestRecommender(user_col, item_col, rating_col, n_estimators=50, max_depth=10)
+    rf_model.fit(train)
+
+    # --------------------------------------------------------
     # STEP 4: Evaluation Baseline
     # --------------------------------------------------------
     print("\n=== STEP 4: Evaluation Baselines ===")
-    models = {"Popularity": pop_model, "MF": mf_model, "CB": cb_model}
+    models = {
+        "Popularity": pop_model,
+        "MF": mf_model,
+        "CB": cb_model,
+        "DecisionTree": tree_model,
+        "RandomForest": rf_model
+    }
     evaluate_models(models, test, user_col, item_col, k=10)
 
     # --------------------------------------------------------
@@ -83,6 +100,29 @@ if __name__ == "__main__":
     if not VERBOSE:
         print("✔ Best MF-Hybrid Recall:", best_w_recall_mf)
         print("✔ Best MF-Hybrid NDCG:", best_w_ndcg_mf)
+
+    # --------------------------------------------------------
+    # STEP 6b: Hybrid with Tree Models
+    # --------------------------------------------------------
+    print("\n=== STEP 6b: Hybrid (Tree-based Models) ===")
+
+    # Hybrid(Tree + CB)
+    best_w_recall_tree_cb, best_w_ndcg_tree_cb = tune_hybrid_weights(
+        {"tree": tree_model, "cb": cb_model},
+        test, user_col, item_col,
+        step=0.1, k=10, verbose=VERBOSE
+    )
+
+    # Hybrid(RF + MF)
+    best_w_recall_rf_mf, best_w_ndcg_rf_mf = tune_hybrid_weights(
+        {"rf": rf_model, "mf": mf_model},
+        test, user_col, item_col,
+        step=0.1, k=10, verbose=VERBOSE
+    )
+
+    if not VERBOSE:
+        print("✔ Best Hybrid (Tree+CB):", best_w_recall_tree_cb, best_w_ndcg_tree_cb)
+        print("✔ Best Hybrid (RF+MF):", best_w_recall_rf_mf, best_w_ndcg_rf_mf)
 
     # --------------------------------------------------------
     # STEP 7: NCF Tuning
@@ -197,7 +237,6 @@ if __name__ == "__main__":
     models["SASRec"] = sasrec_model
     evaluate_models(models, test, user_col, item_col, k=10)
 
-
     # --------------------------------------------------------
     # STEP 11: Hybrid with SASRec
     # --------------------------------------------------------
@@ -212,16 +251,132 @@ if __name__ == "__main__":
         print("✔ Best SASRec-Hybrid NDCG:", best_w_ndcg_sasrec)
 
     # --------------------------------------------------------
+    # STEP 11b: Knowledge Graph Features
+    # --------------------------------------------------------
+    print("\n=== STEP 11b: Knowledge Graph Features ===")
+    from kg_features import build_and_embed
+
+    try:
+        # Ưu tiên dùng GNN (GraphSAGE)
+        G, emb = build_and_embed(
+            df,
+            user_col="learner_id",
+            item_col="content_type",
+            concept_col="topic",
+            method="gnn",     # dùng GraphSAGE
+            dim=32,
+            epochs=20         # giảm epochs để chạy nhanh hơn
+        )
+        print("✔ GNN embeddings generated (GraphSAGE)")
+    except Exception as e:
+        print(f"⚠ GNN embedding failed ({e}), fallback to Node2Vec...")
+        # Fallback sang node2vec
+        G, emb = build_and_embed(
+            df,
+            user_col="learner_id",
+            item_col="content_type",
+            concept_col="topic",
+            method="node2vec",
+            dim=16,
+            epochs=1
+        )
+        print("✔ Node2Vec embeddings generated (fallback)")
+    # In thử vài embedding
+    print("Embedding cho 5 node đầu:", list(emb.items())[:5])
+
+    # --------------------------------------------------------
+    # STEP 11c: KG Recommender
+    # --------------------------------------------------------
+    print("\n=== STEP 11c: KG Recommender ===")
+    from kg_recommender import KGRecommender
+
+    kg_model = KGRecommender(user_col, item_col, emb, metric='cosine')
+    kg_model.fit(train)
+    models["KG"] = kg_model
+    evaluate_models(models, test, user_col, item_col, k=10)
+
+    # --------------------------------------------------------
+    # STEP 11c2: Hybrid (KG + MF + CB)
+    # --------------------------------------------------------
+    print("\n=== STEP 11c2: Hybrid (KG+MF+CB) Tuning ===")
+    best_w_recall_kg, best_w_ndcg_kg = tune_hybrid_weights(
+        {"kg": kg_model, "mf": mf_model, "cb": cb_model},
+        test, user_col, item_col,
+        step=0.1, k=10, verbose=VERBOSE
+    )
+    if not VERBOSE:
+        print("✔ Best Hybrid (KG+MF+CB) Recall:", best_w_recall_kg)
+        print("✔ Best Hybrid (KG+MF+CB) NDCG:", best_w_ndcg_kg)
+
+    # ---------------- STEP 11d: Prepare base_scores & ground_truth ----------------
+    print("\n=== STEP 11d: Preparing base_scores & ground_truth ===")
+
+    base_scores = {}
+    users = test[user_col].unique()
+    items = test[item_col].unique()
+
+    # ground_truth[user] = set of items in test for that user
+    ground_truth = {
+        u: set(test.loc[test[user_col] == u, item_col].tolist())
+        for u in users
+    }
+
+    # Build base_scores for each model in models
+    from evaluation import _safe_recommend
+
+    for name, model in models.items():
+        base_scores[name] = {}
+        for u in users:
+            base_scores[name][u] = {}
+            # use safe recommend to avoid signature issues
+            try:
+                recs = _safe_recommend(model, u, top_k=20)
+            except Exception:
+                # fallback: try common calls
+                try:
+                    recs = model.recommend(u, top_k=20)
+                except Exception:
+                    recs = []
+
+            for rank, item in enumerate(recs):
+                base_scores[name][u][item] = 1.0 / (rank + 1)
+
+            # set score=0 for items not recommended
+            for item in items:
+                if item not in base_scores[name][u]:
+                    base_scores[name][u][item] = 0.0
+
+    print("✔ base_scores & ground_truth built successfully")
+
+
+    # ---------------- STEP 11e: Meta-Hybrid (Stacking) - train meta-learner ----------------
+    print("\n=== STEP 11e: Meta-Hybrid (Stacking) ===")
+    from meta_hybrid import MetaHybridRecommender
+
+    try:
+        meta_model = MetaHybridRecommender(base_scores=base_scores, ground_truth=ground_truth)
+        meta_model.fit()
+        models["MetaHybrid-LR"] = meta_model
+        print("✔ MetaHybrid (LogReg) trained successfully and added to models")
+    except Exception as e:
+        print(f"⚠ Skipped MetaHybrid-LR: {e}")
+
+
+    # --------------------------------------------------------
     # STEP 12: Summary
     # --------------------------------------------------------
     print("\n=== FINAL SUMMARY ===")
     print("Best MF config:", best_mf_cfg)
     print("Best Hybrid-MF Recall:", best_w_recall_mf)
     print("Best Hybrid-MF NDCG:", best_w_ndcg_mf)
+    print("Best Hybrid-Tree+CB:", best_w_recall_tree_cb, best_w_ndcg_tree_cb)
+    print("Best Hybrid-RF+MF:", best_w_recall_rf_mf, best_w_ndcg_rf_mf)
     print("Best Hybrid-NCF (Recall-based):", best_w_recall_ncf_r, best_w_ndcg_ncf_r)
     print("Best Hybrid-NCF (ValLoss-based):", best_w_recall_ncf_v, best_w_ndcg_ncf_v)
     print("Best Hybrid-SASRec Recall:", best_w_recall_sasrec)
     print("Best Hybrid-SASRec NDCG:", best_w_ndcg_sasrec)
+    print("Best Hybrid-KG+MF+CB:", best_w_recall_kg, best_w_ndcg_kg)
+
     print("\n=== END ===\n")
 
     # --------------------------------------------------------
@@ -239,18 +394,16 @@ if __name__ == "__main__":
         f.write(f"Best MF config: {best_mf_cfg}\n")
         f.write(f"Best Hybrid-MF Recall: {best_w_recall_mf}\n")
         f.write(f"Best Hybrid-MF NDCG: {best_w_ndcg_mf}\n")
+        f.write(f"Best Hybrid-Tree+CB: {best_w_recall_tree_cb} {best_w_ndcg_tree_cb}\n")
+        f.write(f"Best Hybrid-RF+MF: {best_w_recall_rf_mf} {best_w_ndcg_rf_mf}\n")
         f.write(f"Best Hybrid-NCF (Recall-based): {best_w_recall_ncf_r} {best_w_ndcg_ncf_r}\n")
         f.write(f"Best Hybrid-NCF (ValLoss-based): {best_w_recall_ncf_v} {best_w_ndcg_ncf_v}\n")
         f.write(f"Best Hybrid-SASRec Recall: {best_w_recall_sasrec}\n")
         f.write(f"Best Hybrid-SASRec NDCG: {best_w_ndcg_sasrec}\n")
+        f.write(f"Best Hybrid-KG+MF+CB: {best_w_recall_kg} {best_w_ndcg_kg}\n")
         f.write("\n=== END ===\n")
 
     print(f"✔ Summary TXT saved to: {summary_txt}")
-
-    def to_float(x):
-        if isinstance(x, (np.float32, np.float64)):
-            return float(x)
-        return x
 
     # ----- CSV -----
     summary_csv = os.path.join(results_dir, "summary.csv")
@@ -258,50 +411,105 @@ if __name__ == "__main__":
         writer = csv.writer(f)
         writer.writerow(["Model", "Config/Weights", "Recall@10", "NDCG@10"])
 
+        def safe_score(x, key):
+            return float(x["score"]) if (x is not None and key in x) else ""
+
+        # MF
         writer.writerow(["MF", json.dumps(best_mf_cfg), "", ""])
 
+        # Hybrid MF
         writer.writerow([
-            "Hybrid-MF (Best Recall)",
-            json.dumps(best_w_recall_mf),
-            to_float(best_w_recall_mf["score"]), ""
-        ])
-        writer.writerow([
-            "Hybrid-MF (Best NDCG)",
-            json.dumps(best_w_ndcg_mf),
-            "", to_float(best_w_ndcg_mf["score"])
+            "Hybrid-MF",
+            "Recall=" + json.dumps(best_w_recall_mf) + " | NDCG=" + json.dumps(best_w_ndcg_mf),
+            safe_score(best_w_recall_mf, "score"),
+            safe_score(best_w_ndcg_mf, "score")
         ])
 
+        # Hybrid Tree+CB
         writer.writerow([
-            "Hybrid-NCF (Best Recall)",
-            json.dumps(best_w_recall_ncf_r),
-            to_float(best_w_recall_ncf_r["score"]), ""
-        ])
-        writer.writerow([
-            "Hybrid-NCF (Best NDCG)",
-            json.dumps(best_w_ndcg_ncf_r),
-            "", to_float(best_w_ndcg_ncf_r["score"])
-        ])
-        writer.writerow([
-            "Hybrid-NCF (ValLoss Recall)",
-            json.dumps(best_w_recall_ncf_v),
-            to_float(best_w_recall_ncf_v["score"]), ""
-        ])
-        writer.writerow([
-            "Hybrid-NCF (ValLoss NDCG)",
-            json.dumps(best_w_ndcg_ncf_v),
-            "", to_float(best_w_ndcg_ncf_v["score"])
+            "Hybrid-Tree+CB",
+            "Recall=" + json.dumps(best_w_recall_tree_cb) + " | NDCG=" + json.dumps(best_w_ndcg_tree_cb),
+            safe_score(best_w_recall_tree_cb, "score"),
+            safe_score(best_w_ndcg_tree_cb, "score")
         ])
 
+        # Hybrid RF+MF
         writer.writerow([
-            "Hybrid-SASRec (Best Recall)",
-            json.dumps(best_w_recall_sasrec),
-            to_float(best_w_recall_sasrec["score"]), ""
+            "Hybrid-RF+MF",
+            "Recall=" + json.dumps(best_w_recall_rf_mf) + " | NDCG=" + json.dumps(best_w_ndcg_rf_mf),
+            safe_score(best_w_recall_rf_mf, "score"),
+            safe_score(best_w_ndcg_rf_mf, "score")
         ])
+
+        # Hybrid NCF
         writer.writerow([
-            "Hybrid-SASRec (Best NDCG)",
-            json.dumps(best_w_ndcg_sasrec),
-            "", to_float(best_w_ndcg_sasrec["score"])
+            "Hybrid-NCF",
+            "Recall=" + json.dumps(best_w_recall_ncf_r) + " | NDCG=" + json.dumps(best_w_ndcg_ncf_r),
+            safe_score(best_w_recall_ncf_r, "score"),
+            safe_score(best_w_ndcg_ncf_r, "score")
         ])
+
+        # Hybrid NCF (ValLoss)
+        writer.writerow([
+            "Hybrid-NCF (ValLoss)",
+            "Recall=" + json.dumps(best_w_recall_ncf_v) + " | NDCG=" + json.dumps(best_w_ndcg_ncf_v),
+            safe_score(best_w_recall_ncf_v, "score"),
+            safe_score(best_w_ndcg_ncf_v, "score")
+        ])
+
+        # Hybrid SASRec
+        writer.writerow([
+            "Hybrid-SASRec",
+            "Recall=" + json.dumps(best_w_recall_sasrec) + " | NDCG=" + json.dumps(best_w_ndcg_sasrec),
+            safe_score(best_w_recall_sasrec, "score"),
+            safe_score(best_w_ndcg_sasrec, "score")
+        ])
+
+        # ✅ Hybrid KG+MF+CB
+        writer.writerow([
+            "Hybrid-KG+MF+CB",
+            "Recall=" + json.dumps(best_w_recall_kg) + " | NDCG=" + json.dumps(best_w_ndcg_kg),
+            safe_score(best_w_recall_kg, "score"),
+            safe_score(best_w_ndcg_kg, "score")
+        ])
+
 
     print(f"✔ Summary CSV saved to: {summary_csv}")
-    print("\n=== END ===\n")
+
+    # --------------------------------------------------------
+    # STEP 12b: Ranking theo Recall và NDCG
+    # --------------------------------------------------------
+    df_summary = pd.read_csv(summary_csv)
+
+    df_summary["Recall@10"] = pd.to_numeric(df_summary["Recall@10"], errors="coerce")
+    df_summary["NDCG@10"] = pd.to_numeric(df_summary["NDCG@10"], errors="coerce")
+
+    # Ranking Recall
+    top_recall = df_summary.sort_values("Recall@10", ascending=False).head(3)
+    print("\n🔥 Top models theo Recall@10:")
+    print(top_recall[["Model", "Recall@10"]].to_string(index=False))
+
+    # Ranking NDCG
+    top_ndcg = df_summary.sort_values("NDCG@10", ascending=False).head(3)
+    print("\n🔥 Top models theo NDCG@10:")
+    print(top_ndcg[["Model", "NDCG@10"]].to_string(index=False))
+    
+    # --------------------------------------------------------
+    # STEP 13: Visualization
+    # --------------------------------------------------------
+    try:
+        from visualize_results import plot_results
+        charts_dir = os.path.join(root_dir, "charts")
+        os.makedirs(charts_dir, exist_ok=True)   # ✅ đảm bảo charts/ tồn tại
+        plot_results(summary_csv, charts_dir)
+        print(f"✔ Charts saved in: {charts_dir}")
+    except Exception as e:
+        print(f"⚠ Visualization skipped due to error: {e}")
+
+
+    from meta_eval_patch import update_summary
+
+    # models_dict chứa các mô hình đã train (NCF, MF, SASRec, MetaHybrid, v.v.)
+    update_summary(models, test, user_col="learner_id", item_col="content_type", results_dir="../results")
+
+    print("\n=== END OF PIPELINE ===\n")
