@@ -10,6 +10,14 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import os
 
+# ------------------------------------------------------------
+# Utils: device selection
+# ------------------------------------------------------------
+def get_device(device=None):
+    """Chọn thiết bị tự động (CUDA nếu có, không thì CPU)."""
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
 
 # ------------------------------------------------------------
 # Dataset wrapper
@@ -30,7 +38,6 @@ class NCFDataset(Dataset):
             torch.tensor(self.ratings[idx], dtype=torch.float32),
         )
 
-
 # ------------------------------------------------------------
 # NCF Model (MLP-based)
 # ------------------------------------------------------------
@@ -49,7 +56,7 @@ class NCF(nn.Module):
                 layers.append(nn.Dropout(dropout))
             input_dim = h
         layers.append(nn.Linear(input_dim, 1))
-        layers.append(nn.Sigmoid())  # predicted rating probability
+        layers.append(nn.Sigmoid())
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, user_idx, item_idx):
@@ -58,9 +65,8 @@ class NCF(nn.Module):
         x = torch.cat([u, i], dim=-1)
         return self.mlp(x).squeeze()
 
-
 # ------------------------------------------------------------
-# NCF Wrapper for recommendation
+# NCF Wrapper
 # ------------------------------------------------------------
 class NCFWrapper:
     def __init__(self, model, user_map, item_map, device="cpu"):
@@ -74,7 +80,6 @@ class NCFWrapper:
         if k is not None:
             top_k = k
         if user_id not in self.user_map:
-            # fallback an toàn: random items
             return random.sample(list(self.item_map.keys()), min(top_k, len(self.item_map)))
 
         u_idx = torch.tensor([self.user_map[user_id]], dtype=torch.long).to(self.device)
@@ -86,7 +91,6 @@ class NCFWrapper:
 
         ranked = sorted(zip(item_indices, scores), key=lambda x: x[1], reverse=True)
         return [self.rev_item_map[i] for i, _ in ranked[:top_k]]
-
 
 # ------------------------------------------------------------
 # Training function
@@ -103,15 +107,16 @@ def train_ncf(
     batch_size=256,
     lr=0.001,
     epochs=20,
-    device="cpu",
+    device=None,
     verbose=True,
     patience=5,
     save_best=True,
     save_path="../models/ncf_best.pt"
 ):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    device = get_device(device)
 
-    # Encode user và item IDs
+    # Encode user/item
     user_ids = train_df[user_col].unique()
     item_ids = train_df[item_col].unique()
     user_map = {u: idx for idx, u in enumerate(user_ids)}
@@ -126,7 +131,6 @@ def train_ncf(
         batch_size=batch_size, shuffle=False
     )
 
-    # Model + optimizer + loss
     model = NCF(len(user_ids), len(item_ids), embedding_dim, hidden_layers, dropout).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.BCELoss()
@@ -136,7 +140,6 @@ def train_ncf(
     patience_counter = 0
 
     for epoch in range(epochs):
-        # --- Train ---
         model.train()
         total_loss = 0
         for users, items, ratings in train_loader:
@@ -150,7 +153,6 @@ def train_ncf(
             total_loss += loss.item()
         train_loss = total_loss / len(train_loader)
 
-        # --- Validation ---
         model.eval()
         val_loss = 0
         with torch.no_grad():
@@ -164,7 +166,6 @@ def train_ncf(
         if verbose:
             print(f"[NCF] Epoch {epoch+1}/{epochs} | Train Loss={train_loss:.4f} | Val Loss={val_loss:.4f}")
 
-        # --- Early stopping check ---
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_state = {
@@ -187,17 +188,16 @@ def train_ncf(
                     print(f"[EarlyStopping] No improvement for {patience} epochs. Stopping at epoch {epoch+1}.")
                 break
 
-    # Restore best model
     if best_state is not None:
         model.load_state_dict(best_state["state_dict"])
 
     return NCFWrapper(model, user_map, item_map, device), best_val_loss
 
-
 # ------------------------------------------------------------
-# Load function (tự động lấy cả mapping + config)
+# Load function
 # ------------------------------------------------------------
-def load_ncf_model(save_path, device="cpu"):
+def load_ncf_model(save_path, device=None):
+    device = get_device(device)
     checkpoint = torch.load(save_path, map_location=device, weights_only=False)
     user_map = checkpoint["user_map"]
     item_map = checkpoint["item_map"]

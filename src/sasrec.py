@@ -10,6 +10,14 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import os
 
+# ------------------------------------------------------------
+# Utils: device selection
+# ------------------------------------------------------------
+def get_device(device=None):
+    """Chọn thiết bị tự động (CUDA nếu có, không thì CPU)."""
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
 
 # ------------------------------------------------------------
 # Dataset wrapper cho SASRec
@@ -36,7 +44,6 @@ class SASRecDataset(Dataset):
         padding = [0] * (self.max_len - len(seq))
         seq = padding + seq
         return torch.tensor(seq, dtype=torch.long), torch.tensor(target, dtype=torch.long)
-
 
 # ------------------------------------------------------------
 # SASRec Model
@@ -67,7 +74,6 @@ class SASRec(nn.Module):
         out = self.fc_out(x[:, -1, :])  # chỉ lấy bước cuối
         return out
 
-
 # ------------------------------------------------------------
 # Wrapper để recommend
 # ------------------------------------------------------------
@@ -84,10 +90,8 @@ class SASRecWrapper:
         if k is not None:
             top_k = k
 
-        # lấy lịch sử của user
         history = self.user_histories.get(user_id, [])
         if not history:
-            # fallback: random items
             return random.sample(list(self.item_map.keys()), min(top_k, len(self.item_map)))
 
         mapped = [self.item_map[i] for i in history if i in self.item_map]
@@ -106,8 +110,6 @@ class SASRecWrapper:
         )
         return [self.rev_item_map[i] for i, _ in ranked[:top_k]]
 
-
-
 # ------------------------------------------------------------
 # Training function
 # ------------------------------------------------------------
@@ -122,12 +124,13 @@ def train_sasrec(
     batch_size=64,
     epochs=10,
     max_len=50,
-    device="cpu",
+    device=None,
     verbose=True,
     save_best=True,
     save_path="../models/sasrec_best.pt",
 ):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    device = get_device(device)
 
     dataset = SASRecDataset(user_sequences, item_map, max_len=max_len)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -171,12 +174,11 @@ def train_sasrec(
 
     return SASRecWrapper(model, item_map, user_histories=user_sequences, device=device, max_len=max_len), best_val_loss
 
-
-
 # ------------------------------------------------------------
 # Load function
 # ------------------------------------------------------------
-def load_sasrec_model(save_path, item_map, user_histories, device="cpu"):
+def load_sasrec_model(save_path, item_map, user_histories, device=None):
+    device = get_device(device)
     checkpoint = torch.load(save_path, map_location=device, weights_only=False)
     model = SASRec(
         n_items=len(item_map),
@@ -188,4 +190,3 @@ def load_sasrec_model(save_path, item_map, user_histories, device="cpu"):
     ).to(device)
     model.load_state_dict(checkpoint["state_dict"])
     return SASRecWrapper(model, item_map, user_histories=user_histories, device=device, max_len=checkpoint["max_len"])
-

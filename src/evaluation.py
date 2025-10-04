@@ -7,15 +7,19 @@ import numpy as np
 import logging
 from models import train_hybrid, train_hybrid_ncf, MFRecommender
 from evaluation_metrics import recall_at_k, ndcg_at_k
+from tabulate import tabulate
+import pandas as pd
+import os
 
 __all__ = [
     "evaluate_model",
     "evaluate_models",
     "tune_mf",
     "tune_hybrid_weights",
-    "_safe_recommend"
+    "train_hybrid_generic",
+    "_safe_recommend",
+    "evaluate_and_log"
 ]
-
 
 logging.basicConfig(
     level=logging.INFO, 
@@ -31,7 +35,7 @@ def evaluate_model(model, test, user_col="learner_id", item_col="content_type", 
     all_recs, all_truths = [], []
 
     for u in users:
-        recs = model.recommend(user_id=u, top_k=k)
+        recs = _safe_recommend(model, u, top_k=k)
         truths = test.loc[test[user_col] == u, item_col].tolist()
         all_recs.append(recs)
         all_truths.append(truths)
@@ -55,20 +59,22 @@ def evaluate_models(models, test, user_col="learner_id", item_col="content_type"
         all_scores = {}
 
         for u in users:
-            # try để tránh khác biệt tham số recommend
-            try:
-                recs = model.recommend(user_id=u, top_k=k)
-            except TypeError:
-                recs = model.recommend(u, k)
-
+            recs = _safe_recommend(model, u, top_k=k)
             truths = test.loc[test[user_col] == u, item_col].tolist()
             all_recs.append(recs)
             all_truths.append(truths)
 
             # raw_scores: rank-based scoring
             score_dict = {}
-            for idx, i in enumerate(recs):
-                score_dict[i] = 1.0 / (idx + 1)  # rank → score
+            if isinstance(recs, list):
+                for idx, i in enumerate(recs):
+                    if isinstance(i, tuple):
+                        item, sc = i
+                        score_dict[item] = sc
+                    else:
+                        score_dict[i] = 1.0 / (idx + 1)
+            elif isinstance(recs, dict):
+                score_dict = recs
             all_scores[u] = score_dict
 
         recall = recall_at_k(all_recs, all_truths, k)
@@ -117,68 +123,94 @@ def tune_mf(train, val, user_col="learner_id", item_col="content_type", rating_c
 
 
 # ------------------------------------------------------------
-# Tune Hybrid Weights (MF / NCF)
+# Generalized Hybrid Weight Tuning
 # ------------------------------------------------------------
 def tune_hybrid_weights(models, test, user_col, item_col, step=0.1, k=10, verbose=False):
-    """
-    Grid search for Hybrid weights based on Recall@k and NDCG@k.
-    Supports both MF-Hybrid and NCF-Hybrid.
-    """
+    import itertools
     keys = list(models.keys())
-    use_ncf = "ncf" in keys
+    n = len(keys)
 
     weights_range = np.arange(0, 1.01, step)
-    total = len(weights_range) ** 2
+    total = len(weights_range) ** n
     logging.info(f"[Hybrid Tuning] Total configs = {total}")
 
     best_recall, best_ndcg = {"score": -1}, {"score": -1}
     tested = 0
 
-    for w_pop in weights_range:
-        for w_mid in weights_range:  # mf or ncf
-            w_cb = 1.0 - w_pop - w_mid
-            if w_cb < 0 or w_cb > 1:
-                continue
+    for wp in itertools.product(weights_range, repeat=n):
+        if abs(sum(wp) - 1.0) > 1e-6:
+            continue
+        weights = dict(zip(keys, map(float, wp)))
 
-            if use_ncf:
-                weights = {"pop": float(w_pop), "ncf": float(w_mid), "cb": float(w_cb)}
-                hybrid = train_hybrid_ncf(models, weights)
-            else:
-                weights = {"pop": float(w_pop), "mf": float(w_mid), "cb": float(w_cb)}
-                hybrid = train_hybrid(models, weights)
+        hybrid = train_hybrid_generic(models, weights)
+        recall, ndcg = evaluate_model(hybrid, test, user_col, item_col, k=k)
 
-            # chỉ lấy metrics, bỏ raw_scores
-            metrics, _ = evaluate_models({"Hybrid": hybrid}, test, user_col, item_col, k=k)
-            recall, ndcg = metrics["Hybrid"]
+        if recall > best_recall["score"]:
+            best_recall = {**weights, "score": recall}
+        if ndcg > best_ndcg["score"]:
+            best_ndcg = {**weights, "score": ndcg}
 
-            if recall > best_recall["score"]:
-                best_recall = {**weights, "score": recall}
-            if ndcg > best_ndcg["score"]:
-                best_ndcg = {**weights, "score": ndcg}
-
-            tested += 1
-            if verbose and tested % max(1, total // 10) == 0:
-                print(f"[Hybrid Tuning] Progress {tested}/{total}...")
+        tested += 1
+        if verbose and tested % max(1, total // 10) == 0:
+            print(f"[Hybrid Tuning] Progress {tested}/{total}...")
 
     print("\n=== BEST HYBRID CONFIG ===")
-    if use_ncf:
-        print(f"By Recall@{k}: pop={best_recall['pop']}, ncf={best_recall['ncf']}, cb={best_recall['cb']} → recall={best_recall['score']:.3f}")
-        print(f"By NDCG@{k}:  pop={best_ndcg['pop']}, ncf={best_ndcg['ncf']}, cb={best_ndcg['cb']} → ndcg={best_ndcg['score']:.3f}")
-    else:
-        print(f"By Recall@{k}: pop={best_recall['pop']}, mf={best_recall['mf']}, cb={best_recall['cb']} → recall={best_recall['score']:.3f}")
-        print(f"By NDCG@{k}:  pop={best_ndcg['pop']}, mf={best_ndcg['mf']}, cb={best_ndcg['cb']} → ndcg={best_ndcg['score']:.3f}")
+    print(f"By Recall@{k}: {best_recall} ")
+    print(f"By NDCG@{k}:  {best_ndcg} ")
 
     return best_recall, best_ndcg
+
+
+# ------------------------------------------------------------
+# Generic Hybrid Recommender
+# ------------------------------------------------------------
+def train_hybrid_generic(models, weights):
+    """
+    Generic hybrid recommender that linearly combines scores 
+    from multiple models using given weights.
+    """
+    class HybridRecommender:
+        def __init__(self, models, weights):
+            self.models = models
+            self.weights = weights
+
+        def recommend(self, user_id, top_k=10):
+            scores = {}
+            for name, model in self.models.items():
+                w = self.weights.get(name, 0.0)
+                if w <= 0:
+                    continue
+                try:
+                    recs = _safe_recommend(model, user_id, top_k=top_k*2)
+                except Exception:
+                    continue
+
+                # normalize về dict {item: score}
+                rec_dict = {}
+                if isinstance(recs, list):
+                    for idx, i in enumerate(recs):
+                        if isinstance(i, tuple):
+                            item, sc = i
+                            rec_dict[item] = sc * w
+                        else:
+                            rec_dict[i] = (1.0 / (idx + 1)) * w
+                elif isinstance(recs, dict):
+                    rec_dict = {i: s * w for i, s in recs.items()}
+
+                for iid, sc in rec_dict.items():
+                    scores[iid] = scores.get(iid, 0) + sc
+
+            if not scores:
+                return []
+            return sorted(scores.items(), key=lambda x: -x[1])[:top_k]
+
+    return HybridRecommender(models, weights)
+
 
 # ------------------------------------------------------------
 # Safe recommend wrapper (for models with different signatures)
 # ------------------------------------------------------------
 def _safe_recommend(model, user, top_k=10):
-    """
-    Try different calling conventions for recommend() 
-    because some models use (user_id=..., top_k=...), 
-    some use (user, k), etc.
-    """
     try:
         return model.recommend(user_id=user, top_k=top_k)
     except TypeError:
@@ -192,3 +224,108 @@ def _safe_recommend(model, user, top_k=10):
                     return model.recommend(user)
                 except Exception:
                     return []
+                else:
+                    return model.recommend(user)[:top_k]
+            else:
+                return model.recommend(user, top_k)
+        else:
+            return model.recommend(user, top_k)
+    else:
+        return model.recommend(user_id=user, top_k=top_k)
+
+
+# ------------------------------------------------------------
+# Precision & MAP helpers
+# ------------------------------------------------------------
+def precision_at_k(recommended, relevant, k=10):
+    if not recommended:
+        return 0.0
+    recommended_at_k = recommended[:k]
+    hits = sum(1 for i in recommended_at_k if i in relevant)
+    return hits / k
+
+def average_precision(recommended, relevant, k=10):
+    if not recommended:
+        return 0.0
+    score, hits = 0.0, 0
+    for i, item in enumerate(recommended[:k], start=1):
+        if item in relevant:
+            hits += 1
+            score += hits / i
+    return score / min(len(relevant), k) if relevant else 0.0
+
+
+# ------------------------------------------------------------
+# Evaluate & Log all models (with CSV/TXT/PDF export)
+# ------------------------------------------------------------
+def evaluate_and_log(models, test, user_col="learner_id", item_col="content_type", k=10, save_path=None):
+    results = []
+    users = test[user_col].unique()
+
+    for name, model in models.items():
+        all_recs, all_truths = [], []
+        precs, maps = [], []
+
+
+        for u in users:
+            recs = _safe_recommend(model, u, top_k=k)
+            truths = test.loc[test[user_col] == u, item_col].tolist()
+            all_recs.append(recs)
+            all_truths.append(truths)
+
+            precs.append(precision_at_k(recs, truths, k))
+            maps.append(average_precision(recs, truths, k))
+
+        recall = recall_at_k(all_recs, all_truths, k)
+        ndcg = ndcg_at_k(all_recs, all_truths, k)
+        precision = np.mean(precs) if precs else 0.0
+        map_score = np.mean(maps) if maps else 0.0
+
+        results.append([name, round(recall,4), round(ndcg,4), round(precision,4), round(map_score,4)])
+
+    # ✅ Print table
+    print("\n=== 📊 Evaluation Summary ===")
+    print(tabulate(results, headers=["Model", f"Recall@{k}", f"NDCG@{k}", f"Precision@{k}", f"MAP@{k}"], tablefmt="github"))
+
+    # ✅ Save CSV/TXT/PDF
+    if save_path:
+        df = pd.DataFrame(results, columns=["Model", f"Recall@{k}", f"NDCG@{k}", f"Precision@{k}", f"MAP@{k}"])
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        df.to_csv(save_path, index=False)
+        print(f"✅ Metrics saved to {save_path}")
+
+        txt_path = save_path.replace(".csv", ".txt")
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(tabulate(results, headers=df.columns, tablefmt="github"))
+        print(f"✅ Summary TXT saved: {txt_path}")
+
+        try:
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet
+
+            pdf_path = save_path.replace(".csv", ".pdf")
+            doc = SimpleDocTemplate(pdf_path, pagesize=A4)
+            styles = getSampleStyleSheet()
+            elements = []
+
+            elements.append(Paragraph("Evaluation Summary", styles["Heading1"]))
+            table = Table([df.columns.tolist()] + results)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+                ("TEXTCOLOR", (0,0), (-1,0), colors.black),
+                ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ]))
+            elements.append(table)
+            doc.build(elements)
+            print(f"📄 PDF report generated: {pdf_path}")
+        except Exception as e:
+            print(f"⚠ Could not generate PDF: {e}")
+
+    return results
+
+
+# ------------------------------------------------------------
+# End of src/evaluation.py
