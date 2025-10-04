@@ -1,13 +1,19 @@
-=== FINAL SUMMARY ===
-Best MF config: {'factors': 50, 'lr': 0.005, 'reg': 0.05, 'epochs': 40}
-Best Hybrid-MF Recall: {'pop': 0.1, 'mf': 0.9, 'cb': 0.0, 'score': 0.5387096774193548}
-Best Hybrid-MF NDCG: {'pop': 0.1, 'mf': 0.9, 'cb': 0.0, 'score': np.float64(0.24753815048496647)}
-Best Hybrid-Tree+CB: {'pop': 0.0, 'mf': 0.0, 'cb': 1.0, 'score': 0.4774193548387097} {'pop': 0.0, 'mf': 0.0, 'cb': 1.0, 'score': np.float64(0.21462436077556685)}
-Best Hybrid-RF+MF: {'pop': 0.0, 'mf': 0.0, 'cb': 1.0, 'score': 0.535483870967742} {'pop': 0.0, 'mf': 0.0, 'cb': 1.0, 'score': np.float64(0.2440110590115891)}
-Best Hybrid-NCF (Recall-based): {'pop': 0.0, 'ncf': 0.4, 'cb': 0.6, 'score': 0.5290322580645161} {'pop': 0.0, 'ncf': 1.0, 'cb': 0.0, 'score': np.float64(0.2492669142516686)}
-Best Hybrid-NCF (ValLoss-based): {'pop': 0.0, 'ncf': 0.4, 'cb': 0.6, 'score': 0.5290322580645161} {'pop': 0.0, 'ncf': 1.0, 'cb': 0.0, 'score': np.float64(0.2492669142516686)}
-Best Hybrid-SASRec Recall: {'pop': 0.30000000000000004, 'mf': 0.2, 'cb': 0.49999999999999994, 'score': 0.5032258064516129}
-Best Hybrid-SASRec NDCG: {'pop': 0.30000000000000004, 'mf': 0.6000000000000001, 'cb': 0.09999999999999987, 'score': np.float64(0.24016063889577594)}
-Best Hybrid-KG+MF+CB: {'pop': 0.0, 'mf': 1.0, 'cb': 0.0, 'score': 0.535483870967742} {'pop': 0.0, 'mf': 0.9, 'cb': 0.09999999999999998, 'score': np.float64(0.24750686141162684)}
+=== FINAL SUMMARY (MyDataset) ===
 
-=== END ===
+          Model       Type  Recall@10  NDCG@10  Precision@10   MAP@10  RankRecall  RankNDCG
+  MetaHybrid-LR MetaHybrid   0.551613 0.264547      0.057000 0.176734           1         1
+   RandomForest     Single   0.532258 0.251495      0.055000 0.162586           2         2
+             KG         KG   0.532258 0.248624      0.055000 0.160563           2         3
+             MF     Single   0.512903 0.239532      0.053000 0.155847           4         4
+NCF-BestValLoss     Single   0.503226 0.238217      0.052000 0.152335           5         5
+ NCF-BestRecall     Single   0.503226 0.238217      0.052000 0.152335           5         5
+     Popularity     Single   0.490323 0.233368      0.050667 0.152751           7         7
+   DecisionTree     Single   0.490323 0.231563      0.050667 0.151824           7         8
+             CB     Single   0.477419 0.214624      0.049333 0.130601           9        10
+         SASRec     Single   0.467742 0.225687      0.050667 0.137148          10         9
+
+=== TOP 3 MODELS ===
+        Model       Type  Recall@10  NDCG@10  Precision@10   MAP@10  RankRecall  RankNDCG
+MetaHybrid-LR MetaHybrid   0.551613 0.264547         0.057 0.176734           1         1
+ RandomForest     Single   0.532258 0.251495         0.055 0.162586           2         2
+           KG         KG   0.532258 0.248624         0.055 0.160563           2         3
