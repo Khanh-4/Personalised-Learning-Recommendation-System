@@ -213,35 +213,50 @@ def simulate_bandit(
     binary_threshold: float = 0.5,
     top_k: int = 1,
     verbose: bool = False,
-    return_logs: bool = False   # ✅ thêm tham số
 ):
-    """Offline simulation for contextual bandit."""
+    """
+    Offline simulation for contextual bandit.
+    Trả về:
+      - cumulative_reward
+      - avg_reward
+      - ctr
+      - logs (reward từng vòng để plot)
+    """
     import pandas as pd
+
     users = test_df[user_col].unique()
     all_items = test_df[item_col].unique().tolist()
 
     if candidate_selector is None:
-        def candidate_selector_default(u, row): return all_items
+        def candidate_selector_default(u, row): 
+            return all_items
         candidate_selector = candidate_selector_default
 
     total_reward = 0.0
     total_binary_hits = 0
     total_rounds = 0
-    reward_logs = []   # ✅ log reward từng vòng
+    reward_logs = []   # ✅ CHANGE: dùng reward_logs để lưu toàn bộ reward
 
     for idx, row in test_df.iterrows():
         u = row[user_col]
         candidates = candidate_selector(u, row)
-        if len(candidates) == 0:
+        if not candidates:
             continue
 
         contexts = [make_context_fn(u, i) for i in candidates]
-        chosen = bandit.select(contexts, candidates)
-        reward = reward_fn(u, chosen, row)
 
+        # chọn hành động
+        try:
+            chosen = bandit.select(contexts, candidates)
+        except Exception:
+            chosen = candidates[bandit.select(contexts)]
+
+        reward = reward_fn(u, chosen, row)
         r = float(binarize_reward(reward, threshold=binary_threshold)) if binarize else float(reward)
 
-        # update
+        # ✅ CHANGE: lưu reward vào log
+        reward_logs.append(r)
+
         try:
             ch_idx = candidates.index(chosen)
             bandit.update(contexts[ch_idx], r)
@@ -253,24 +268,22 @@ def simulate_bandit(
             total_binary_hits += 1
         total_rounds += 1
 
-        reward_logs.append(r)   # ✅ lưu reward
-
+        # ✅ CHANGE: chỉ in mỗi 200 vòng, dùng print chứ không logging
         if verbose and total_rounds % 200 == 0:
             print(f"[Bandit] rounds={total_rounds}, cum_reward={total_reward:.3f}")
 
     avg_reward = total_reward / total_rounds if total_rounds else 0.0
     ctr = (total_binary_hits / total_rounds) if total_rounds and binarize else None
 
-    results = {
+    # ✅ CHANGE: thêm logs vào kết quả để step 12c vẽ biểu đồ
+    return {
         "rounds": total_rounds,
         "cumulative_reward": total_reward,
         "avg_reward": avg_reward,
-        "ctr": ctr
+        "ctr": ctr,
+        "logs": reward_logs
     }
-    if return_logs:
-        results["logs"] = reward_logs   # ✅ trả thêm log reward để vẽ biểu đồ
 
-    return results
 
 
 # ---------------------------

@@ -443,7 +443,9 @@ if __name__ == "__main__":
         top_k=1,
         verbose=True
     )
-    print("Contextual Bandit (LinUCB) results:", res)
+    print(f"Contextual Bandit (LinUCB): rounds={res['rounds']}, avg_reward={res['avg_reward']:.4f}") 
+
+
 
 
 
@@ -530,7 +532,9 @@ if __name__ == "__main__":
         top_k=1,
         verbose=True
     )
-    print("✅ Contextual Bandit (LinUCB + Embeddings) results:", res)
+    
+    print(f"✅ LinUCB + Embeddings: rounds={res['rounds']}, avg_reward={res['avg_reward']:.4f}")
+
 
 
 
@@ -560,6 +564,134 @@ if __name__ == "__main__":
         print("⚠ No reward logs available to plot.")
 
 
+    # ---------------- STEP 13: Compare Bandit Algorithms ----------------
+    print("\n=== STEP 13: Compare Bandit Algorithms (LinUCB vs Random vs EpsilonGreedy) ===")
+    from contextual_bandit import LinUCB, EpsilonGreedy, simulate_bandit, make_context_default, prefilter_top_k_by_popularity
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # dùng cùng context function (đã có scaler)
+    make_ctx = make_context_scaled if 'make_context_scaled' in locals() else make_context
+
+    # -------------------
+    # A. LinUCB
+    # -------------------
+    dim = scaler.mean_.shape[0] if hasattr(scaler, "mean_") else 16
+    lin_bandit = LinUCB(dim=dim, alpha=1.0, regularization=1.0)
+    res_lin = simulate_bandit(
+        bandit=lin_bandit,
+        test_df=test,
+        make_context_fn=make_ctx,
+        user_col=user_col,
+        item_col=item_col,
+        reward_fn=reward_fn,
+        candidate_selector=candidate_selector,
+        binarize=False,
+        binary_threshold=0.5,
+        top_k=1,
+        verbose=False
+    )
+
+    # -------------------
+    # B. Epsilon-Greedy
+    # -------------------
+    eps_bandit = EpsilonGreedy(epsilon=0.1)
+    res_eps = simulate_bandit(
+        bandit=eps_bandit,
+        test_df=test,
+        make_context_fn=make_ctx,
+        user_col=user_col,
+        item_col=item_col,
+        reward_fn=reward_fn,
+        candidate_selector=candidate_selector,
+        binarize=False,
+        binary_threshold=0.5,
+        top_k=1,
+        verbose=False
+    )
+
+    # -------------------
+    # C. Random baseline (ε=1)
+    # -------------------
+    rand_bandit = EpsilonGreedy(epsilon=1.0)
+    res_rand = simulate_bandit(
+        bandit=rand_bandit,
+        test_df=test,
+        make_context_fn=make_ctx,
+        user_col=user_col,
+        item_col=item_col,
+        reward_fn=reward_fn,
+        candidate_selector=candidate_selector,
+        binarize=False,
+        binary_threshold=0.5,
+        top_k=1,
+        verbose=False
+    )
+
+    # -------------------
+    # Summary
+    # -------------------
+    results_bandit = [
+        ("LinUCB", res_lin["avg_reward"], res_lin["cumulative_reward"]),
+        ("EpsilonGreedy (ε=0.1)", res_eps["avg_reward"], res_eps["cumulative_reward"]),
+        ("Random (ε=1.0)", res_rand["avg_reward"], res_rand["cumulative_reward"]),
+    ]
+
+    print("\n=== 📊 Bandit Comparison Results ===")
+    print("{:<25} {:<15} {:<15}".format("Model", "Avg Reward", "Cumulative"))
+    for name, avg_r, cum_r in results_bandit:
+        print(f"{name:<25} {avg_r:<15.4f} {cum_r:<15.4f}")
+    # -------------------
+    # Plot comparison
+    # -------------------
+    models_bandit = [r[0] for r in results_bandit]
+    avg_rewards = [r[1] for r in results_bandit]
+
+    plt.figure(figsize=(6,4))
+    plt.bar(models_bandit, avg_rewards)
+    plt.ylabel("Average Reward")
+    plt.title("Comparison of Bandit Strategies")
+    plt.xticks(rotation=15)
+    plt.tight_layout()
+
+    # Lưu biểu đồ
+    bandit_plot_path = os.path.join(results_dir, "charts", "bandit_comparison.png")
+    os.makedirs(os.path.dirname(bandit_plot_path), exist_ok=True)
+    plt.savefig(bandit_plot_path)
+    plt.close()
+
+    print(f"📈 Bandit comparison chart saved to: {bandit_plot_path}")
+
+    # ✅ Đặt lại models dict (tránh trùng tên biến `models` với list ở trên)
+    models = {
+    "Popularity": pop_model,
+    "MF": mf_model,
+    "CB": cb_model,
+    "DecisionTree": tree_model,
+    "RandomForest": rf_model,
+    # "NCF-BestRecall": ncf_best_recall,
+    # "NCF-BestValLoss": ncf_best_valloss,
+    #"SASRec": sasrec_best,
+    "KG": kg_model,
+    "MetaHybrid-LR": meta_model,
+}
+
+# ---------------- STEP 14: Finalize & reports ----------------
+    from step14_finalize import run_step14
+
+    step14_outputs = run_step14(
+        models=models,
+        test_df=test,
+        user_col=user_col,
+        item_col=item_col,
+        rating_col=rating_col,
+        results_dir=results_dir,
+        pop_model=pop_model,
+        mf_model=mf_model,
+        emb=emb,
+        dataset_name="MyDataset"
+    )
+    print("STEP14 outputs:", step14_outputs)
 
 
     # --------------------------------------------------------
@@ -594,6 +726,5 @@ if __name__ == "__main__":
         results_dir=results_dir,
         dataset_name="MyDataset"   # đổi tên cho hợp lý
     )
-
 
     print("\n=== END OF PIPELINE ===\n")
