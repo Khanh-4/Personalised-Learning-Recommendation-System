@@ -1,16 +1,16 @@
 === FINAL SUMMARY (MyDataset) ===
 
         Model       Type  Recall@10  NDCG@10  Precision@10   MAP@10  RankRecall  RankNDCG
-MetaHybrid-LR MetaHybrid   0.583871 0.286594      0.060333 0.190933           1         1
+MetaHybrid-LR MetaHybrid   0.580645 0.271808      0.060000 0.176538           1         1
  RandomForest     Single   0.532258 0.251495      0.055000 0.162586           2         2
            KG         KG   0.532258 0.248624      0.055000 0.160563           2         3
-           MF     Single   0.509677 0.240415      0.052667 0.156479           4         4
-   Popularity     Single   0.490323 0.233368      0.050667 0.152751           5         5
- DecisionTree     Single   0.490323 0.231563      0.050667 0.151824           5         6
+   Popularity     Single   0.490323 0.233368      0.050667 0.152751           4         5
+           MF     Single   0.490323 0.237064      0.050667 0.156763           4         4
+ DecisionTree     Single   0.490323 0.231563      0.050667 0.151824           4         6
            CB     Single   0.477419 0.214624      0.049333 0.130601           7         7
 
 === TOP 3 MODELS ===
         Model       Type  Recall@10  NDCG@10  Precision@10   MAP@10  RankRecall  RankNDCG
-MetaHybrid-LR MetaHybrid   0.583871 0.286594      0.060333 0.190933           1         1
- RandomForest     Single   0.532258 0.251495      0.055000 0.162586           2         2
-           KG         KG   0.532258 0.248624      0.055000 0.160563           2         3
+MetaHybrid-LR MetaHybrid   0.580645 0.271808         0.060 0.176538           1         1
+ RandomForest     Single   0.532258 0.251495         0.055 0.162586           2         2
+           KG         KG   0.532258 0.248624         0.055 0.160563           2         3
